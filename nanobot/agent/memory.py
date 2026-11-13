@@ -508,6 +508,13 @@ class MemoryStore:
 
         Returns ``(prompt, last_cursor)`` or ``None`` if nothing to process.
 
+        Entries are included whole, oldest first, until
+        ``_DREAM_HISTORY_BUDGET_CHARS`` is reached; entries past the budget
+        stay queued for the next Dream run and the returned cursor covers
+        only the entries actually included. A single entry larger than the
+        whole budget can never fit, so it is head-truncated — with a logged
+        warning instead of a silent drop — and consumed.
+
         The current contents of the durable memory files (SOUL.md, USER.md,
         memory/MEMORY.md) reach Dream through the normal agent system context.
         """
@@ -517,13 +524,29 @@ class MemoryStore:
             return None
 
         batch = entries[:max_entries]
-        history_text = "\n".join(
-            f"[{e['timestamp']}] {truncate_text(e['content'], 1000)}"
-            for e in batch
-        )
+        lines: list[str] = []
+        included = 0
+        used = 0
+        for entry in batch:
+            content = entry["content"]
+            if lines and used + len(content) > _DREAM_HISTORY_BUDGET_CHARS:
+                break  # out of budget: leave the rest queued, cursor stops short
+            if not lines and len(content) > _DREAM_HISTORY_BUDGET_CHARS:
+                logger.warning(
+                    "history entry exceeds the Dream history budget "
+                    "({} > {} chars); truncating this entry. Usually means a "
+                    "caller forgot its own cap.",
+                    len(content),
+                    _DREAM_HISTORY_BUDGET_CHARS,
+                )
+                content = truncate_text(content, _DREAM_HISTORY_BUDGET_CHARS)
+            lines.append(f"[{entry['timestamp']}] {content}")
+            used += len(content)
+            included += 1
+        history_text = "\n".join(lines)
         template = self._dream_template()
         prompt = f"{template}\n\n## Conversation History\n{history_text}"
-        return (prompt, batch[-1]["cursor"])
+        return (prompt, batch[included - 1]["cursor"])
 
     def dream_content_diff(self) -> str:
         """Structured summary of uncommitted changes to the durable memory files.
@@ -702,6 +725,15 @@ class MemoryStore:
 # emergency hard cap against pathological provider output.
 _RAW_ARCHIVE_MAX_CHARS = 16_000
 _HISTORY_ENTRY_HARD_CAP = 64_000
+
+# The Dream prompt's history section is bounded as a whole, not per entry:
+# since #5610 every compaction appends the cumulative checkpoint, and a
+# per-entry head-clip silently drops the checkpoint's tail — the durable
+# state — while the Dream cursor still advances past it (issue #6649).
+# Entries are included whole while the budget lasts; what does not fit stays
+# queued for the next Dream run. 20 entries × ~1000 chars, the size the
+# per-entry cap used to bound.
+_DREAM_HISTORY_BUDGET_CHARS = 20_000
 _ARCHIVE_TOOL_RESULT = (
     "Session archival does not execute tools. Use only the supplied conversation and "
     "return the requested compact checkpoint now; do not call another tool."

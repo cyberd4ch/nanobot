@@ -106,15 +106,48 @@ class TestBuildDreamPrompt:
         prompt, _ = result
         assert prompt.startswith(store.default_dream_prompt() + "\n\n## Conversation History\n")
 
-    def test_truncates_long_entries_at_1000_chars(self, store):
-        long_content = "x" * 2000
-        store.append_history(long_content)
+    def test_includes_entries_whole_within_the_history_budget(self, store):
+        # cumulative compaction checkpoints (#5610) run far longer than the
+        # old per-entry clip; their tail is the durable state, so entries
+        # pass through whole while the prompt budget lasts
+        content = ("fact line\n" * 300).rstrip()
+        store.append_history(content)
         result = store.build_dream_prompt()
         assert result is not None
-        prompt, _ = result
-        assert long_content not in prompt
-        assert "x" * 1000 in prompt
-        assert "x" * 1001 not in prompt
+        prompt, cursor = result
+        assert content in prompt
+        assert "... (truncated)" not in prompt
+        assert cursor == 1
+
+    def test_entries_past_the_history_budget_stay_queued(self, store):
+        big = "y" * 7000
+        for i in range(3):
+            store.append_history(f"{big} entry-{i + 1:02d}")
+
+        result = store.build_dream_prompt()
+
+        assert result is not None
+        prompt, cursor = result
+        # the first two fit the 20k budget; the third is deferred, not clipped
+        assert "entry-01" in prompt
+        assert "entry-02" in prompt
+        assert "entry-03" not in prompt
+        assert cursor == 2
+        pending = store.read_unprocessed_history(since_cursor=cursor)
+        assert [e["cursor"] for e in pending] == [3]
+
+    def test_single_oversized_entry_is_truncated_and_consumed(self, store):
+        # one entry larger than the whole budget can never fit: clip it
+        # loudly rather than stalling Dream on it forever
+        content = "z" * 25_000
+        store.append_history(content)
+        result = store.build_dream_prompt()
+        assert result is not None
+        prompt, cursor = result
+        assert "z" * 20_000 in prompt
+        assert "z" * 20_001 not in prompt
+        assert "... (truncated)" in prompt
+        assert cursor == 1
 
     def test_batches_oldest_unprocessed_entries_first(self, store):
         for i in range(25):
