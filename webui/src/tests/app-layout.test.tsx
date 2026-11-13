@@ -3929,6 +3929,43 @@ describe("App layout", () => {
     expect(screen.queryByRole("menuitem", { name: "Move to" })).not.toBeInTheDocument();
   });
 
+  it.each([false, true])("animates replaced threads rather than focusing a visible pane (mobile=%s)", async mobile => {
+    vi.stubGlobal("matchMedia", vi.fn((query: string) => ({
+      matches: mobile && query.includes("max-width: 767px"), media: query, onchange: null,
+      addListener: vi.fn(), removeListener: vi.fn(), addEventListener: vi.fn(), removeEventListener: vi.fn(), dispatchEvent: vi.fn(),
+    })));
+    mockSessions = ["alpha", "child", "other"].map(chatId => ({
+      key: `websocket:${chatId}`, channel: "websocket", chatId,
+      createdAt: null, updatedAt: null, title: `${chatId} topic`, preview: "",
+    }));
+    window.history.replaceState(null, "", "/#/chat/websocket%3Aalpha");
+    mockFetchRoutes({ "/api/webui/sidebar-state": { workbench: { version: 1, tabs: {
+      "tab:alpha": { explicit: true, title: "Group", paneKeys: ["websocket:alpha", "websocket:child"], layout: "columns" },
+    } } } });
+    render(<App />);
+    await act(async () => { await import("@/components/thread/ThreadShell"); });
+    await screen.findByTestId("workbench-pane-websocket:alpha");
+    const sidebar = screen.getByRole("navigation", { name: "Sidebar navigation" });
+    await within(sidebar).findByRole("button", { name: "Group: Group" });
+    const descriptor = Object.getOwnPropertyDescriptor(document, "startViewTransition");
+    const capture = vi.fn((update: () => void) => {
+      update();
+      return { ready: Promise.resolve(), finished: Promise.resolve(), skipTransition: vi.fn() };
+    });
+    Object.defineProperty(document, "startViewTransition", { configurable: true, value: capture });
+    try {
+      fireEvent.click(within(sidebar).getByRole("button", { name: "child topic" }));
+      await waitFor(() => expect(screen.getByTestId("workbench-pane-websocket:child")).toHaveAttribute("data-active", "true"));
+      expect(capture).toHaveBeenCalledTimes(mobile ? 1 : 0);
+      fireEvent.click(within(sidebar).getByRole("button", { name: "other topic" }));
+      await screen.findByTestId("workbench-pane-websocket:other");
+      expect(capture).toHaveBeenCalledTimes(mobile ? 2 : 1);
+    } finally {
+      if (descriptor) Object.defineProperty(document, "startViewTransition", descriptor);
+      else Reflect.deleteProperty(document, "startViewTransition");
+    }
+  });
+
   it("materializes a singleton tab without linking it to another pane", async () => {
     mockSessions = [
       {

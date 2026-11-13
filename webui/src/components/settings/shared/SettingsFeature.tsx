@@ -37,6 +37,11 @@ export function SettingsFeature({
   const { t } = useTranslation();
   const [open, setOpen] = useState(initialOpen && enabled);
   const section = useRef<HTMLElement>(null);
+  const opener = useRef<HTMLElement | null>(null);
+  const changeOpen = (next: boolean) => {
+    if (next) opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setOpen(next);
+  };
   useEffect(() => {
     if (initialOpen && enabled) {
       setOpen(true);
@@ -46,7 +51,7 @@ export function SettingsFeature({
   return (
     <section ref={section} aria-label={title}>
       <Dialog open={Boolean(children) && open} onOpenChange={(next) => {
-        setOpen(next);
+        changeOpen(next);
         if (!next) onClose?.();
       }}>
       <SettingsGroup>
@@ -65,10 +70,15 @@ export function SettingsFeature({
             </button>
           </DialogTrigger> : null}
           <ToggleButton checked={enabled} disabled={disabled} ariaLabel={title} label={title}
-            onChange={(next) => { setOpen(next); onChange(next); }} />
+            onChange={(next) => { changeOpen(next); onChange(next); }} />
         </SettingsRow>
       </SettingsGroup>
-      {children ? <DialogContent aria-describedby={undefined} className="settings-grid max-h-[85dvh] w-[min(calc(100vw-2rem),40rem)] max-w-none overflow-y-auto p-0 [--settings-surface:var(--background)]">
+      {children ? <DialogContent aria-describedby={undefined} onCloseAutoFocus={(event) => {
+        if (opener.current?.isConnected) {
+          event.preventDefault();
+          opener.current.focus({ preventScroll: true });
+        }
+      }} className="settings-grid max-h-[85dvh] w-[min(calc(100vw-2rem),40rem)] max-w-none overflow-y-auto p-0 [--settings-surface:var(--background)]">
         <DialogTitle className="sr-only">{title}</DialogTitle>
         <div className="pb-4 pt-8">{children}</div>
       </DialogContent> : null}
